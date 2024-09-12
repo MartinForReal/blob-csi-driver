@@ -26,7 +26,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
+	network "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v6"
 	"github.com/Azure/azure-sdk-for-go/storage"
 	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/stretchr/testify/assert"
@@ -35,7 +35,8 @@ import (
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/blob-csi-driver/pkg/util"
-	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/subnetclient/mocksubnetclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/mock_azclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/subnetclient/mock_subnetclient"
 	azureprovider "sigs.k8s.io/cloud-provider-azure/pkg/provider"
 )
 
@@ -229,45 +230,6 @@ users:
 	}
 }
 
-func TestGetKeyvaultToken(t *testing.T) {
-	env := azure.Environment{
-		ActiveDirectoryEndpoint: "unit-test",
-		KeyVaultEndpoint:        "unit-test",
-	}
-	d := NewFakeDriver()
-	d.cloud = &azureprovider.Cloud{}
-	d.cloud.Environment = env
-	_, err := d.getKeyvaultToken()
-	expectedErr := fmt.Errorf("no credentials provided for Azure cloud provider")
-	if !reflect.DeepEqual(expectedErr, err) {
-		t.Errorf("actualErr: (%v), expectedErr: (%v)", err, expectedErr)
-	}
-	d.cloud.AADClientID = "unit-test"
-	d.cloud.AADClientSecret = "unit-test"
-	_, err = d.getKeyvaultToken()
-	assert.NoError(t, err)
-
-}
-
-func TestInitializeKvClient(t *testing.T) {
-	env := azure.Environment{
-		ActiveDirectoryEndpoint: "unit-test",
-		KeyVaultEndpoint:        "unit-test",
-	}
-	d := NewFakeDriver()
-	d.cloud = &azureprovider.Cloud{}
-	d.cloud.Environment = env
-	_, err := d.initializeKvClient()
-	expectedErr := fmt.Errorf("no credentials provided for Azure cloud provider")
-	if !reflect.DeepEqual(expectedErr, err) {
-		t.Errorf("actualErr: (%v), expectedErr: (%v)", err, expectedErr)
-	}
-	d.cloud.AADClientID = "unit-test"
-	d.cloud.AADClientSecret = "unit-test"
-	_, err = d.initializeKvClient()
-	assert.NoError(t, err)
-}
-
 func TestGetKeyVaultSecretContent(t *testing.T) {
 	env := azure.Environment{
 		ActiveDirectoryEndpoint: "unit-test",
@@ -307,8 +269,9 @@ func TestUpdateSubnetServiceEndpoints(t *testing.T) {
 	d := NewFakeDriver()
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-	mockSubnetClient := mocksubnetclient.NewMockInterface(ctrl)
-
+	mockSubnetClient := mock_subnetclient.NewMockInterface(ctrl)
+	networkClientFactory := mock_azclient.NewMockClientFactory(ctrl)
+	networkClientFactory.EXPECT().GetSubnetClient().Return(mockSubnetClient)
 	config := azureprovider.Config{
 		ResourceGroup: "rg",
 		Location:      "loc",
@@ -317,9 +280,10 @@ func TestUpdateSubnetServiceEndpoints(t *testing.T) {
 	}
 
 	d.cloud = &azureprovider.Cloud{
-		SubnetsClient: mockSubnetClient,
-		Config:        config,
+		Config:               config,
+		NetworkClientFactory: networkClientFactory,
 	}
+	d.networkClientFactory = networkClientFactory
 	ctx := context.TODO()
 
 	testCases := []struct {
@@ -343,8 +307,8 @@ func TestUpdateSubnetServiceEndpoints(t *testing.T) {
 			name: "[success] ServiceEndpoints is nil",
 			testFunc: func(t *testing.T) {
 				fakeSubnet := network.Subnet{
-					SubnetPropertiesFormat: &network.SubnetPropertiesFormat{},
-					Name:                   ptr.To("subnetName"),
+					Properties: &network.SubnetPropertiesFormat{},
+					Name:       ptr.To("subnetName"),
 				}
 
 				mockSubnetClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(fakeSubnet, nil).Times(1)
@@ -358,8 +322,8 @@ func TestUpdateSubnetServiceEndpoints(t *testing.T) {
 			name: "[success] storageService does not exists",
 			testFunc: func(t *testing.T) {
 				fakeSubnet := network.Subnet{
-					SubnetPropertiesFormat: &network.SubnetPropertiesFormat{
-						ServiceEndpoints: &[]network.ServiceEndpointPropertiesFormat{},
+					Properties: &network.SubnetPropertiesFormat{
+						ServiceEndpoints: []*network.ServiceEndpointPropertiesFormat{},
 					},
 					Name: ptr.To("subnetName"),
 				}
@@ -376,8 +340,8 @@ func TestUpdateSubnetServiceEndpoints(t *testing.T) {
 			name: "[success] storageService already exists",
 			testFunc: func(t *testing.T) {
 				fakeSubnet := network.Subnet{
-					SubnetPropertiesFormat: &network.SubnetPropertiesFormat{
-						ServiceEndpoints: &[]network.ServiceEndpointPropertiesFormat{
+					Properties: &network.SubnetPropertiesFormat{
+						ServiceEndpoints: []*network.ServiceEndpointPropertiesFormat{
 							{
 								Service: &storageService,
 							},
